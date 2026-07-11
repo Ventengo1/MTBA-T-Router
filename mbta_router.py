@@ -1,15 +1,11 @@
 import csv
 import networkx as nx
+import requests
 
-G = nx.Graph()
 
-print("Loading MBTA data and analyzing stops")
+API_KEY = "98065d5be6414f3e9cb9657823dfe6cb"
+BASE_URL = "https://api-v3.mbta.com"
 
-surface_count = 0
-underground_count = 0
-
-# The definitive list of downtown underground subway station hubs in Boston.
-# If a station is a major subway hub and NOT on this list, it's above ground!
 UNDERGROUND_STATIONS = {
     "North Station", "Haymarket", "Government Center", "Park Street", 
     "Boylston", "Arlington", "Copley", "Hynes Convention Center", "Kenmore",
@@ -23,6 +19,69 @@ UNDERGROUND_STATIONS = {
     "Science Park / West End", "Union Square", "East Somerville", "Gilman Square", 
     "Magoun Square", "Ball Square", "Medford/Tufts"
 }
+
+#Got this list from AI
+
+headers = {"x-api-key": API_KEY} if API_KEY != "98065d5be6414f3e9cb9657823dfe6cb" else {}
+
+
+G = nx.Graph()
+
+print("Loading MBTA data and analyzing stops")
+
+response = requests.get(f"{BASE_URL}/stops?filter[route_type]=0,1", headers=headers)
+
+#adding error stuff
+
+if response.status.code != 200:
+    print(f"Error fetching data from MBTA API: {response.status_code}")
+    exit()
+
+stops_data = response.json().get('data', [])
+
+for stop in stops_data:
+    attributes = stop.get('attributes', {})
+    stop_id = stop.get('id')
+    name = attributes.get('name')
+
+    #classify station environment
+    structure = "underground" if name in UNDERGROUND_STATIONS else "surface"
+
+    G.add_node(stop_id, name=name, structure=structure)
+
+print("Successfully loaded stations from api")
+
+
+print("Working on track connections")
+
+lines_response = requests.get(f"{BASE_URL}/routes?filter[route_type]=0,1", headers=headers)
+routes_data = lines_response.json().get('data', [])
+
+edges_added = 0
+for route in routes_data:
+    route_id = route.get('id')
+    line_name = route.get('attributes', {}).get('long_name')
+
+    #get order esqenune of stiaosn now
+
+    stops_on_route_resp = requests.get(f"{BASE_URL}/stops?filter[route]={route_id}", headers=headers)
+    route_stops = stops_on_route_resp.json().get('data', [])
+
+    #translate route to parent hubs
+
+    hub_ids_on_route = []
+    for s in route_stops:
+        parent = s.get('relationships', {}).get('parent_station', {}).get('data', {})
+        
+        if parent_id in G.nodes and parent_id not in hub_ids_on_route:
+            hub_ids_on_route.append(parent_id)
+        elif s.get('id') in G.nodes and s.get('id') not in hub_ids_on_route:
+            hub_ids_on_route.append(s.get('id'))
+
+    for i in range(len(hub_ids_on_route) - 1):
+
+
+
 
 with open ('stops.txt', mode = 'r', encoding = 'utf-8') as f:
     reader = csv.DictReader(f)
@@ -140,18 +199,25 @@ start_station = "place-newto" #Newton Highlands --> surface
 end_station = "place-gover" #Government Center --> underground
 
 def print_detailed_route(path_ids, title):
-    print(f"\n{title}:  ")
+    #Ok, now gotta make this look a lot better
 
+    print(f"{title}:")
+    currnet_line = 0
+    tranfer_count = 0
     for i in range(len(path_ids)):
         current_id = path_ids[i]
         current_name = G.nodes[current_id]['name']
-        current_type = G.nodes[current_id]['structure']
+        current_type = G.nodes[current_id]['structure'].upper()
 
+        #If not wat first station, look at what track being used 
         if i > 0:
-            prev_id = path_ids[i-1]
-            prev_type = G.nodes[prev_id]['structure']
-            if prev_type != current_type:
-                print(f" Level Change ---> Changing from {prev_type} to {current_type}")
+            prev_id = path_ids[i]
+            prev_name = G.nodes[prev_id]['name']
+
+            detecteed_line = "Subway Link"
+            if "place-dngl" in prev_id or "place_new" in prev_id or "Newton" in prev_name:
+                detected_line = "Green Line D"
+            elif "place"    
 
 
 
