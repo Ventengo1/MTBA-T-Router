@@ -129,33 +129,53 @@ def surface_priority_weight(u, v, edge_attributes):
 
     if target_structure == 'underground':
         #add a penalty to underground stations to discourage against them
-        return base_time + 15 #penalty of 15
+        return base_time + 20 #penalty of 20
     
     else:
 
         return base_time
     
-start_station = "place-lake" #Boston College --> surface
-end_station = "place-coecl" #Coply --> underground\
+    
+start_station = "place-newhi" #Newton Highlands --> surface
+end_station = "place-govtc" #Government Center --> underground\
+
+def print_detailed_route(path_ids, title):
+    print(f"\n{title}:  ")
+
+    for i in range(len(path-ids)):
+        current_id = path_ids[i]
+        current_name = G.nodes[current_id]['name']
+        currrent_type = G.nodes[current_id]['structure']
+
+        if i > 0:
+            prev_id = path_ids[i-1]
+            prev_type = G.nodes[prev_id]['structure']
+            if prev_type != current_type:
+                print(f" Level Change ---> Changing from {prev_type} to {current_type}")
+
+# Temporary diagnostic check  ---> Gemini gave me this to torublehsoot my issues with the stations not working
+print("\n--- Diagnostic Check ---")
+newton_found = [node for node, data in G.nodes(data=True) if "Newton" in data.get('name', '')]
+print(f"Stations found containing 'Newton': {newton_found}")
 
 
 if G.has_node(start_station) and G.has_node(end_station):
     print(f"Finding optimal route from {G.nodes[start_station]['name']} to {G.nodes[end_station]['name']}...\n")
 
-    # Standard route calculation
+    # route calculation
     standard_path_ids = nx.dijkstra_path(G, start_station, end_station, weight='time')
-    standard_path_names = [G.nodes[node_id]['name'] for node_id in standard_path_ids]
+   
 
     # Custom route calculation
     custom_path_ids = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
      #gemini helped me with line above and below, I get it now though
-    custom_path_names = [G.nodes[node_id]['name'] for node_id in custom_path_ids]
+    
 
     print("Standard fastest route:")
-    print(" -> ".join(standard_path_names))
+    print_detailed_route(standard_path_ids, "Standard fastest route")
 
     print("\nCustom route prioritizing surface stations:")
-    print(" -> ".join(custom_path_names))
+    print_detailed_route(custom_path_ids, "Custom route prioritizing surface stations")
 
 else:
     print("Error: One or both of the specified stations do not exist in the graph.")
