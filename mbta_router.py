@@ -1,9 +1,13 @@
 import csv
 import networkx as nx
 import requests
+import os
+from dotenv import load_dotenv
 
 
-API_KEY = "98065d5be6414f3e9cb9657823dfe6cb"
+load_dotenv()
+
+API_KEY = os.getenv("MBTA_API_KEY")
 BASE_URL = "https://api-v3.mbta.com"
 
 UNDERGROUND_STATIONS = {
@@ -22,7 +26,7 @@ UNDERGROUND_STATIONS = {
 
 #Got this list from AI
 
-headers = {"x-api-key": API_KEY} if API_KEY != "98065d5be6414f3e9cb9657823dfe6cb" else {}
+headers = {"x-api-key": API_KEY} if API_KEY != os.getenv("MBTA_API_KEY") else {}
 
 
 G = nx.Graph()
@@ -33,7 +37,7 @@ response = requests.get(f"{BASE_URL}/stops?filter[route_type]=0,1", headers=head
 
 #adding error stuff
 
-if response.status.code != 200:
+if response.status_code != 200:
     print(f"Error fetching data from MBTA API: {response.status_code}")
     exit()
 
@@ -54,7 +58,7 @@ print("Successfully loaded stations from api")
 
 print("Working on track connections")
 
-lines_response = requests.get(f"{BASE_URL}/routes?filter[route_type]=0,1", headers=headers)
+lines_response = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
 routes_data = lines_response.json().get('data', [])
 
 edges_added = 0
@@ -72,6 +76,7 @@ for route in routes_data:
     hub_ids_on_route = []
     for s in route_stops:
         parent = s.get('relationships', {}).get('parent_station', {}).get('data', {})
+        parent_id = parent.get('id') if parent else None
         
         if parent_id in G.nodes and parent_id not in hub_ids_on_route:
             hub_ids_on_route.append(parent_id)
@@ -88,8 +93,106 @@ for route in routes_data:
 print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections across all lines")
 
 
+surface_count = 0
+underground_count = 0
 
-def custom_priority_weight(u, v, edge_attributes):
+with open ('stops.txt', mode = 'r', encoding = 'utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        if row.get('location_type') == '1':
+            stop_id = row['stop_id']
+            name = row['stop_name']
+
+            # Make sure it's a primary subway system station, not a commuter rail stop
+            if stop_id.startswith('place-'):
+                
+                # If the station name is in our downtown tunnel list, it's underground.
+                # Otherwise, it's a street-level surface stop (like the Green Line branches)!
+                if name in UNDERGROUND_STATIONS:
+                    structure = "underground"
+                    underground_count += 1
+                else:
+                    structure = "surface"
+                    surface_count += 1
+                
+                # Add the real station to our map
+                G.add_node(stop_id, name=name, structure=structure)
+
+print(f"Successfully loaded {G.number_of_nodes()} subway hubs")
+print(f"  Surface Stations: {surface_count}")
+print(f"   Underground Stations: {underground_count} These are less favorable for what I want")
+print(f" The surface stations {surface_count} are more favorable for what I want")
+
+print("MBTA data loaded and analyzed successfully.")
+
+
+#Part 2 of what I gotta do below----
+
+
+#This block here should map the platforms and tracks back to their main hubs/parennt statiosn 
+platform_to_hub = {}
+with open('stops.txt', mode='r', encoding='utf-8') as f: #hopefully this is right...
+    reader = csv.DictReader(f)
+    for row in reader:
+        parent = row.get('parent_station')
+        stop_id = row.get('stop_id')
+
+        if parent in G.nodes:
+            platform_to_hub[stop_id] = parent
+
+
+        elif stop_id in G.nodes:
+            platform_to_hub[stop_id] = stop_id
+
+print(f"Mapped {len(platform_to_hub)} platforms to parent hubs. AYAY!")
+
+# This part below now should group the stop sequences by thier unique trip ud
+
+trips = {}
+
+with open('stop_times.txt', mode = "r", encoding = 'utf-8') as f:
+    reader = csv.DictReader(f)
+    for row in reader:
+        trip_id = row['trip_id']
+        stop_id = row["stop_id"]
+        try:
+            sequence = int(row['stop_sequence'])
+        except ValueError: #Gemini told me to put this line here
+            continue
+        
+
+        if trip_id not in trips:
+            trips[trip_id] = []
+        trips[trip_id].append((sequence, stop_id))
+
+print(f"Gathered {len(trips)} unique train trips that its gotta process then... ")
+
+#Third part of this phase 2 or whtever:
+
+edges_added = 0
+for trip_id, stop_list in trips.items():
+    #here shoudl srot stops by their order on line, hopfully....
+    stop_list.sort()
+
+    for i in range(len(stop_list) - 1):
+        raw_curr = stop_list[i][1]
+        raw_next = stop_list[i+1][1]
+
+        curr_hub = platform_to_hub.get(raw_curr)
+        next_hub = platform_to_hub.get(raw_next)
+
+        #not only add track if both endopoints are valid hubs
+        if curr_hub and next_hub and curr_hub != next_hub:
+            if not G.has_edge(curr_hub, next_hub):
+                G.add_edge(curr_hub, next_hub, time=2)
+                edges_added +=1 
+
+print("Tracks all linked, finally...!!!!")
+
+
+#phase 3 --> should do custom routing
+
+def surface_priority_weight(u, v, edge_attributes):
     #Get base travel time between stations
     base_time = edge_attributes.get('time', 2)
                                     
@@ -98,51 +201,69 @@ def custom_priority_weight(u, v, edge_attributes):
 
     if target_structure == 'underground':
         #add a penalty to underground stations to discourage against them
-        return base_time + 25 #penalty of 25
+        return base_time + 20 #penalty of 20
+    
     else:
-         return base_time
+
+        return base_time
+    
+    
+start_station = "place-newto" #Newton Highlands --> surface
+end_station = "place-gover" #Government Center --> underground
 
 def print_detailed_route(path_ids, title):
     #Ok, now gotta make this look a lot better
-
+    print("\n=====================================")
     print(f"{title}:")
-    currnet_line = 0
-    tranfer_count = 0
+    print("=====================================")
+
+
+    current_line = None
+    transfer_count = 0
+
+
     for i in range(len(path_ids)):
         current_id = path_ids[i]
-        current_name = G.nodes[current_id]['name']
-        current_type = G.nodes[current_id]['structure'].upper()
+        name = G.nodes[current_id]['name']
+        structure = G.nodes[current_id]['structure'].upper()
+
 
         #If not wat first station, look at what track being used 
         if i > 0:
-            prev_id = path_ids[i]
-            prev_name = G.nodes[prev_id]['name']
+            prev_id = path_ids[i-1]
 
-            detecteed_line = "Subway Link"
-            if "place-dngl" in prev_id or "place_new" in prev_id or "Newton" in prev_name:
-                detected_line = "Green Line D"
-            elif "place"    
+            edge_data = G.get_edge_data(prev_id, current_id)
+            detected_line = edge_data.get('line', 'Transit Link') if edge_data else 'Transit Link'
+
+            if current_line and current_line != detected_line:
+                transfer_count += 1
+                prev_name = G.nodes[prev_id]['name']
+                prev_struct = G.nodes[prev_id]['structure'].upper()
+                print(f"\n Tranfer at {prev_name} ({prev_struct})")
+                print(f" Switch from [{current_line}] to [{detected_line}]")
 
 
+            current_line = detected_line
+            print(f"  Ride {current_line} to: {name} ({structure})")
+        else:
+            priority_tag = "High prioirity surface entry" if structure == "SURFACE" else "Underground Start"
+            print(f" Start at {name} ({structure}) - {priority_tag}")
 
+    print(f"Destination Reached ---- Total Transfers: {transfer_count}")
+
+
+#Testing out if works
+
+start_station = "place-newto"
+end_station = "place-gover"
 
 if G.has_node(start_station) and G.has_node(end_station):
-    print(f"Finding optimal route from {G.nodes[start_station]['name']} to {G.nodes[end_station]['name']}...\n")
+    standard_path = nx.dijkstra_path(G, start_station, end_station, weight = 'time')
+    print_detailed_route(standard_path, "standard maps route")
 
-    # route calculation
-    standard_path_ids = nx.dijkstra_path(G, start_station, end_station, weight='time')
-   
-
-    # Custom route calculation
-    custom_path_ids = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
-     #gemini helped me with line above and below, I get it now though
-    
-
-    print("Standard fastest route:")
-    print_detailed_route(standard_path_ids, "Standard fastest route")
-
-    print("\nCustom route prioritizing surface stations:")
-    print_detailed_route(custom_path_ids, "Custom route prioritizing surface stations")
+    #custom path
+    custom_path = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
+    print_detailed_route(custom_path, "custom surface prioritized route")
 
 else:
-    print("Error: One or both of the specified stations do not exist in the graph.")
+    print("error, routing stisaons not found in network")
