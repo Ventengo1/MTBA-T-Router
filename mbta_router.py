@@ -102,7 +102,7 @@ for trip_id, stop_list in trips.items():
     #here shoudl srot stops by their order on line, hopfully....
     stop_list.sort
 
-    for i in rnage(len(stop_list) - 1):
+    for i in range(len(stop_list) - 1):
         raw_curr = stop_list[i][1]
         raw_next = stop_list[i+1][1]
 
@@ -116,3 +116,42 @@ for trip_id, stop_list in trips.items():
                 edges_added +=1 
 
 print("Tracks all linked, finally...!!!!")
+
+
+#phase 3 --> should do custom routing
+
+def surface_priority_weight(u, v, edge_attributes):
+    #Get base travel time between stations
+    base_time = edge_attributes.get('time', 2)
+                                    
+    #check if statiosd is underground
+    target_strucutre = G.nodes[v].get('structure', 'underground')
+
+    if target_structure == 'underground':
+        #add a penalty to underground stations to discourage against them
+        return base_time + 15 #penalty of 15
+    
+    else:
+
+        return base_time
+    
+start_station = "place-brico" #Boston College --> surface
+end_station = "place-cople" #Coply --> underground\
+
+if G.has_node(start_station) and G.has_node(end_station):
+    print(f"Finding optimal route from {G.nodes[start_station]['name']} to {G.nodes[end_station]['name']}...")
+
+    
+    custom_path_ids = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
+    #gemini helped me with line above and below, I get it now though
+    custom_path_names = [G.nodes[node_id]['name'] for node_id in custom_path_ids]
+
+
+    print("Standard fastest route:  ")
+    print(" -> ".join(custom_path_names))
+
+    print("Custom route prioritizing surface stations:  ")
+    print(" -> ".join(custom_path_names))
+
+else:
+    print("Error: One or both of the specified stations do not exist in the graph.")
