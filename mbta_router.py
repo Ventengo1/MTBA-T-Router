@@ -100,7 +100,7 @@ print(f"Gathered {len(trips)} unique train trips that its gotta process then... 
 edges_added = 0
 for trip_id, stop_list in trips.items():
     #here shoudl srot stops by their order on line, hopfully....
-    stop_list.sort
+    stop_list.sort()
 
     for i in range(len(stop_list) - 1):
         raw_curr = stop_list[i][1]
@@ -125,7 +125,7 @@ def surface_priority_weight(u, v, edge_attributes):
     base_time = edge_attributes.get('time', 2)
                                     
     #check if statiosd is underground
-    target_strucutre = G.nodes[v].get('structure', 'underground')
+    target_structure = G.nodes[v].get('structure', 'underground')
 
     if target_structure == 'underground':
         #add a penalty to underground stations to discourage against them
@@ -135,22 +135,26 @@ def surface_priority_weight(u, v, edge_attributes):
 
         return base_time
     
-start_station = "place-brico" #Boston College --> surface
-end_station = "place-cople" #Coply --> underground\
+start_station = "place-lake" #Boston College --> surface
+end_station = "place-coecl" #Coply --> underground\
+
 
 if G.has_node(start_station) and G.has_node(end_station):
-    print(f"Finding optimal route from {G.nodes[start_station]['name']} to {G.nodes[end_station]['name']}...")
+    print(f"Finding optimal route from {G.nodes[start_station]['name']} to {G.nodes[end_station]['name']}...\n")
 
-    
+    # Standard route calculation
+    standard_path_ids = nx.dijkstra_path(G, start_station, end_station, weight='time')
+    standard_path_names = [G.nodes[node_id]['name'] for node_id in standard_path_ids]
+
+    # Custom route calculation
     custom_path_ids = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
-    #gemini helped me with line above and below, I get it now though
+     #gemini helped me with line above and below, I get it now though
     custom_path_names = [G.nodes[node_id]['name'] for node_id in custom_path_ids]
 
+    print("Standard fastest route:")
+    print(" -> ".join(standard_path_names))
 
-    print("Standard fastest route:  ")
-    print(" -> ".join(custom_path_names))
-
-    print("Custom route prioritizing surface stations:  ")
+    print("\nCustom route prioritizing surface stations:")
     print(" -> ".join(custom_path_names))
 
 else:
