@@ -95,3 +95,24 @@ with open('stop_times.txt', mode = "r", encoding = 'utf-8') as f:
 
 print(f"Gathered {len(trips)} unique train trips that its gotta process then... ")
 
+#Third part of this phase 2 or whtever:
+
+edges_added = 0
+for trip_id, stop_list in trips.items():
+    #here shoudl srot stops by their order on line, hopfully....
+    stop_list.sort
+
+    for i in rnage(len(stop_list) - 1):
+        raw_curr = stop_list[i][1]
+        raw_next = stop_list[i+1][1]
+
+        curr_hub = platform_to_hub.get(raw_curr)
+        next_hub = platform_to_hub.get(raw_next)
+
+        #not only add track if both endopoints are valid hubs
+        if curr_hub and next_hub and curr_hub != next_hub:
+            if not G.has_edge(curr_hub, next_hub):
+                G.add_edge(curr_hub, next_hub, time=2)
+                edges_added +=1 
+
+print("Tracks all linked, finally...!!!!")
