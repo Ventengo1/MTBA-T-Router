@@ -136,16 +136,16 @@ def surface_priority_weight(u, v, edge_attributes):
         return base_time
     
     
-start_station = "place-newhi" #Newton Highlands --> surface
-end_station = "place-govtc" #Government Center --> underground\
+start_station = "place-newto" #Newton Highlands --> surface
+end_station = "place-gover" #Government Center --> underground
 
 def print_detailed_route(path_ids, title):
     print(f"\n{title}:  ")
 
-    for i in range(len(path-ids)):
+    for i in range(len(path_ids)):
         current_id = path_ids[i]
         current_name = G.nodes[current_id]['name']
-        currrent_type = G.nodes[current_id]['structure']
+        current_type = G.nodes[current_id]['structure']
 
         if i > 0:
             prev_id = path_ids[i-1]
@@ -153,10 +153,7 @@ def print_detailed_route(path_ids, title):
             if prev_type != current_type:
                 print(f" Level Change ---> Changing from {prev_type} to {current_type}")
 
-# Temporary diagnostic check  ---> Gemini gave me this to torublehsoot my issues with the stations not working
-print("\n--- Diagnostic Check ---")
-newton_found = [node for node, data in G.nodes(data=True) if "Newton" in data.get('name', '')]
-print(f"Stations found containing 'Newton': {newton_found}")
+
 
 
 if G.has_node(start_station) and G.has_node(end_station):
