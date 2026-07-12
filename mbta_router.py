@@ -328,6 +328,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
 # ---------------------------------------------------------------------
 # Enter any real-world locations in the Boston area!
 origin = "10 Jamaicaway"
-destination = "Meda Modern Indian Cuisine"
+destination = "Veggie Crust Brookline"
 
 build_point_to_point_route(origin, destination)
