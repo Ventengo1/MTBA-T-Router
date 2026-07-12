@@ -2,7 +2,9 @@ import csv
 import networkx as nx
 import requests
 import os
+import math
 from dotenv import load_dotenv
+
 
 
 load_dotenv()
@@ -47,11 +49,13 @@ for stop in stops_data:
     attributes = stop.get('attributes', {})
     stop_id = stop.get('id')
     name = attributes.get('name')
+    lat = attributes.get('latitude')
+    lon = attributes.get('longitude')
 
     #classify station environment
     structure = "underground" if name in UNDERGROUND_STATIONS else "surface"
 
-    G.add_node(stop_id, name=name, structure=structure)
+    G.add_node(stop_id, name=name, structure=structure, lat=lat, lon=lon)
 
 print("Successfully loaded stations from api")
 
@@ -92,178 +96,140 @@ for route in routes_data:
             edges_added += 1
 print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections across all lines")
 
+#gps stuff now
 
-surface_count = 0
-underground_count = 0
+def geocode_address(address_str):
+    """Converts a street name string into latitude and longitude via Nominatim"""
+    url = f"https://nominatim.openstreetmap.org/search?q={address_str},+Boston&format=json&limit=1"
+    res = requests.get(url, headers={"User-Agent": "mbta_router_app"})
+    if res.status_code == 200 and len(res.json()) > 0:
+        data = res.json()[0]
+        return float(data['lat']), float(data['lon'])
+    return None, None
 
-with open ('stops.txt', mode = 'r', encoding = 'utf-8') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        if row.get('location_type') == '1':
-            stop_id = row['stop_id']
-            name = row['stop_name']
-
-            # Make sure it's a primary subway system station, not a commuter rail stop
-            if stop_id.startswith('place-'):
-                
-                # If the station name is in our downtown tunnel list, it's underground.
-                # Otherwise, it's a street-level surface stop (like the Green Line branches)!
-                if name in UNDERGROUND_STATIONS:
-                    structure = "underground"
-                    underground_count += 1
-                else:
-                    structure = "surface"
-                    surface_count += 1
-                
-                # Add the real station to our map
-                G.add_node(stop_id, name=name, structure=structure)
-
-print(f"Successfully loaded {G.number_of_nodes()} subway hubs")
-print(f"  Surface Stations: {surface_count}")
-print(f"   Underground Stations: {underground_count} These are less favorable for what I want")
-print(f" The surface stations {surface_count} are more favorable for what I want")
-
-print("MBTA data loaded and analyzed successfully.")
+def haversine_distance(lat1, lon1, lat2, lon2):
+   """Calculates miles between two pairs of coordinates."""
+   R = 3958.8 #---> radius of earth, gemini told me
+   dLat = math.radians(lat2-lat1)
+   dLon = math.radians(lon2 - lon1)
+   a = math.sin(dLat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dLon/2) **2
+   c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+   #this line above gmeini had to help me with, this distance stuff was really nwew to me
+   return R * c
 
 
-#Part 2 of what I gotta do below----
 
-
-#This block here should map the platforms and tracks back to their main hubs/parennt statiosn 
-platform_to_hub = {}
-with open('stops.txt', mode='r', encoding='utf-8') as f: #hopefully this is right...
-    reader = csv.DictReader(f)
-    for row in reader:
-        parent = row.get('parent_station')
-        stop_id = row.get('stop_id')
-
-        if parent in G.nodes:
-            platform_to_hub[stop_id] = parent
-
-
-        elif stop_id in G.nodes:
-            platform_to_hub[stop_id] = stop_id
-
-print(f"Mapped {len(platform_to_hub)} platforms to parent hubs. AYAY!")
-
-# This part below now should group the stop sequences by thier unique trip ud
-
-trips = {}
-
-with open('stop_times.txt', mode = "r", encoding = 'utf-8') as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        trip_id = row['trip_id']
-        stop_id = row["stop_id"]
-        try:
-            sequence = int(row['stop_sequence'])
-        except ValueError: #Gemini told me to put this line here
-            continue
-        
-
-        if trip_id not in trips:
-            trips[trip_id] = []
-        trips[trip_id].append((sequence, stop_id))
-
-print(f"Gathered {len(trips)} unique train trips that its gotta process then... ")
-
-#Third part of this phase 2 or whtever:
-
-edges_added = 0
-for trip_id, stop_list in trips.items():
-    #here shoudl srot stops by their order on line, hopfully....
-    stop_list.sort()
-
-    for i in range(len(stop_list) - 1):
-        raw_curr = stop_list[i][1]
-        raw_next = stop_list[i+1][1]
-
-        curr_hub = platform_to_hub.get(raw_curr)
-        next_hub = platform_to_hub.get(raw_next)
-
-        #not only add track if both endopoints are valid hubs
-        if curr_hub and next_hub and curr_hub != next_hub:
-            if not G.has_edge(curr_hub, next_hub):
-                G.add_edge(curr_hub, next_hub, time=2)
-                edges_added +=1 
-
-print("Tracks all linked, finally...!!!!")
-
-
-#phase 3 --> should do custom routing
-
-def surface_priority_weight(u, v, edge_attributes):
-    #Get base travel time between stations
+def custom_priority_weight(u, v, edge_attributes):
+    edge_type = edge_attributes.get('type', 'transit')
     base_time = edge_attributes.get('time', 2)
-                                    
-    #check if statiosd is underground
-    target_structure = G.nodes[v].get('structure', 'underground')
+    
+    # If is wlaking, how far
+    if edge_type == "walk":
+        distance = edge_attributes.get('distance', 0)
+
+        # Heavy Penalty: Multiply distance by 40 to prioritize sitting on trains over walking.. ---> Im kinda lazy :)
+        return base_time + (distance * 40)
+ 
+
+
+    target_structure = G.nodes[v].get('structure', 'surface')
 
     if target_structure == 'underground':
-        #add a penalty to underground stations to discourage against them
-        return base_time + 20 #penalty of 20
+        return base_time + 20
     
-    else:
+    return base_time
 
-        return base_time
+def build_point_to_point_route(origin_addr, dest_addr):
+
+    print(f"\nLocation stuff and planning low walk travl")
+    orig_lat, orig_lon = geocode_address(origin_addr)
+
+    dest_lat, dest_lon = geocode_address(dest_addr)
     
+    if not orig_lat or not dest_lat:
+        print("Error --> Could not determine GPS coordinates for addresses")
+        return
+
+    # Temporarily plant the start and end addresses as special nodes in the graph network
+    G.add_node("START_NODE", name=origin_addr, type="location")
+    G.add_node("END_NODE", name=dest_addr, type="location")
+
+
+    for node, data in list(G.nodes(data=True)):
+        if node in ["START_NODE", "END_NODE"]:
+            continue
+
+        st_lat, st_lon = data.get('lat'), data.get('lon')
+
+
+        if st_lat and st_lon:
+            # Connect origin to all stations
+
+            dist_to_start = haversine_distance(orig_lat, orig_lon, st_lat, st_lon)
+
+            walk_time_start = dist_to_start * 20  # Roughly 20 minutes per mile walking speed
+            G.add_edge("START_NODE", node, time=walk_time_start, distance=dist_to_start, type="walk")
+
+            # Connect final stations to destination
+            dist_to_end = haversine_distance(dest_lat, dest_lon, st_lat, st_lon)
+            walk_time_end = dist_to_end * 20
+            G.add_edge(node, "END_NODE", time=walk_time_end, distance=dist_to_end, type="walk")
+
+#spent a lot of reasearch time on this part
+    try:
+        path = nx.dijkstra_path(G, "START_NODE", "END_NODE", weight=custom_priority_weight)
+        
+   
+        print(" CUSTOMIZED TRANSIT PLAN:")
+
+        
+        current_line = None
+        for i in range(len(path)):
+            node_id = path[i]
+            
+            if node_id == "START_NODE":
+                print(f" START WALKING FROM: {origin_addr}")
+                continue
+            elif node_id == "END_NODE":
+                print(f"\n ARRIVED AT: {dest_addr}!")
+                continue
+                
+            name = G.nodes[node_id]['name']
+            structure = G.nodes[node_id]['structure'].upper()
+            
+            # Look back at track properties
+            prev_id = path[i-1]
+            edge_data = G.get_edge_data(prev_id, node_id)
+
+            segment_type = edge_data.get('type', 'transit')
+            
+
+            if segment_type == "walk":
+                dist = edge_data.get('distance', 0)
+                if prev_id == "START_NODE":
+
+                    print(f"  Walk {dist:.2f} miles to nearest optimal station: {name} ({structure})")
+                else:
+                    print(f"\n  Exit train and walk final {dist:.2f} miles to your destination.")
+            else:
+                detected_line = edge_data.get('line', 'Transit Line')
+                if current_line and current_line != detected_line:
+                    print(f"   [TRANSFER] At {G.nodes[prev_id]['name']} -> Switch to {detected_line}")
+                current_line = detected_line
+                print(f"    Ride [{current_line}] to: {name} ({structure})")
+
+    except nx.NetworkXNoPath:
+        print("E rror --> Path could not be resolved.")
+        
     
-start_station = "place-newto" #Newton Highlands --> surface
-end_station = "place-gover" #Government Center --> underground
+    G.remove_node("START_NODE")
+    G.remove_node("END_NODE")
 
-def print_detailed_route(path_ids, title):
-    #Ok, now gotta make this look a lot better
-    print("\n=====================================")
-    print(f"{title}:")
-    print("=====================================")
+# ---------------------------------------------------------------------
+# EXECUTE POINT-TO-POINT SEARCH
+# ---------------------------------------------------------------------
+# Enter any real-world locations in the Boston area!
+origin = "10 Jamaicaway"
+destination = "Timeout Market"
 
-
-    current_line = None
-    transfer_count = 0
-
-
-    for i in range(len(path_ids)):
-        current_id = path_ids[i]
-        name = G.nodes[current_id]['name']
-        structure = G.nodes[current_id]['structure'].upper()
-
-
-        #If not wat first station, look at what track being used 
-        if i > 0:
-            prev_id = path_ids[i-1]
-
-            edge_data = G.get_edge_data(prev_id, current_id)
-            detected_line = edge_data.get('line', 'Transit Link') if edge_data else 'Transit Link'
-
-            if current_line and current_line != detected_line:
-                transfer_count += 1
-                prev_name = G.nodes[prev_id]['name']
-                prev_struct = G.nodes[prev_id]['structure'].upper()
-                print(f"\n Tranfer at {prev_name} ({prev_struct})")
-                print(f" Switch from [{current_line}] to [{detected_line}]")
-
-
-            current_line = detected_line
-            print(f"  Ride {current_line} to: {name} ({structure})")
-        else:
-            priority_tag = "High prioirity surface entry" if structure == "SURFACE" else "Underground Start"
-            print(f" Start at {name} ({structure}) - {priority_tag}")
-
-    print(f"Destination Reached ---- Total Transfers: {transfer_count}")
-
-
-#Testing out if works
-
-start_station = "place-newto"
-end_station = "place-gover"
-
-if G.has_node(start_station) and G.has_node(end_station):
-    standard_path = nx.dijkstra_path(G, start_station, end_station, weight = 'time')
-    print_detailed_route(standard_path, "standard maps route")
-
-    #custom path
-    custom_path = nx.dijkstra_path(G, start_station, end_station, weight=surface_priority_weight)
-    print_detailed_route(custom_path, "custom surface prioritized route")
-
-else:
-    print("error, routing stisaons not found in network")
+build_point_to_point_route(origin, destination)
