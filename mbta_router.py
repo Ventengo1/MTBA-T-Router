@@ -112,7 +112,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
    R = 3958.8 #---> radius of earth, gemini told me
    dLat = math.radians(lat2-lat1)
    dLon = math.radians(lon2 - lon1)
-   a = math.sin(dLat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dLon/2) **2
+   a = math.sin(dLat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dLon/2)**2
    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
    #this line above gmeini had to help me with, this distance stuff was really nwew to me
    return R * c
@@ -214,9 +214,9 @@ def build_point_to_point_route(origin_addr, dest_addr):
             else:
                 detected_line = edge_data.get('line', 'Transit Line')
                 if current_line and current_line != detected_line:
-                    print(f"   [TRANSFER] At {G.nodes[prev_id]['name']} -> Switch to {detected_line}")
+                    print(f"    [TRANSFER] At {G.nodes[prev_id]['name']} -> Switch to {detected_line}")
                 current_line = detected_line
-                print(f"    Ride [{current_line}] to: {name} ({structure})")
+                print(f"     Ride [{current_line}] to: {name} ({structure})")
 
     except nx.NetworkXNoPath:
         print("E rror --> Path could not be resolved.")
