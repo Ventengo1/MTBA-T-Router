@@ -234,25 +234,34 @@ def _geocode_photon(address_str):
 
 
 def geocode_address(address_str):
-    
-    resolved = _resolve_with_gemini(address_str)
-    query = resolved if resolved else address_str
-    if resolved:
-        print(f"  (Gemini resolved '{address_str}' -> '{resolved}')")
 
-    lat, lon = _geocode_nominatim(query)
+    lat, lon = _geocode_nominatim(address_str)
     if lat is not None:
         return lat, lon
 
-    print(f"  (Nominatim found no results for '{query}', trying LocationIQ...)")
-    lat, lon = _geocode_locationiq(query)
+    print(f"  (Nominatim found no results for '{address_str}', trying LocationIQ...)")
+    lat, lon = _geocode_locationiq(address_str)
     if lat is not None:
         return lat, lon
 
     print(f"  (trying Photon...)")
-    lat, lon = _geocode_photon(query)
+    lat, lon = _geocode_photon(address_str)
     if lat is not None:
         return lat, lon
+
+    print(f"  (all geocoders failed on '{address_str}', asking Gemini for the exact address...)")
+    resolved = _resolve_with_gemini(address_str)
+    if resolved:
+        print(f"  (Gemini guessed '{resolved}' -- worth double-checking this is right)")
+        lat, lon = _geocode_nominatim(resolved)
+        if lat is not None:
+            return lat, lon
+        lat, lon = _geocode_locationiq(resolved)
+        if lat is not None:
+            return lat, lon
+        lat, lon = _geocode_photon(resolved)
+        if lat is not None:
+            return lat, lon
 
     print(f"  (No geocoder could resolve '{address_str}' -- check spelling/formatting)")
     return None, None
@@ -386,6 +395,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
 
 # Enter any real-world locations in the Boston area!
 origin = "10 Jamaicaway"
-destination = "Veggie Crust Brookline"
+destination = "500 Harvard St, Brookline, MA 02446" #testing this to see fi this will work now
 
 build_point_to_point_route(origin, destination)
