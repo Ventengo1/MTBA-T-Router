@@ -28,11 +28,7 @@ UNDERGROUND_STATIONS = {
 
 #Got this list from AI
 
-# FIX: this used to compare API_KEY to os.getenv("MBTA_API_KEY") -- but API_KEY
-# *is* os.getenv("MBTA_API_KEY"), so that condition was always False and the key
-# in your .env file was never actually sent. That meant every request ran
-# unauthenticated and anonymous rate limits were likely killing the burst of
-# per-route requests below, silently returning empty results.
+
 headers = {"x-api-key": API_KEY} if API_KEY else {}
 print("Using MBTA API key" if API_KEY else "No MBTA_API_KEY found -- running unauthenticated (lower rate limits)")
 
@@ -56,7 +52,7 @@ for stop in stops_data:
     stop_id = stop.get('id')
     name = attributes.get('name')
     lat = attributes.get('latitude')
-    lon = attributes.get('longitude')
+    lon  =  attributes.get('longitude')
 
     #classify station environment
     structure = "underground" if name in UNDERGROUND_STATIONS else "surface"
@@ -68,9 +64,7 @@ print("Successfully loaded stations from api")
 
 print("Working on track connections")
 
-# FIX: route_patterns doesn't support filter[route_type] (that 400 you saw) --
-# it only supports filter[route] (among a few others). So we grab the subway/
-# light-rail route IDs first, then filter route_patterns by those IDs.
+
 routes_resp = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
 route_ids = [r['id'] for r in routes_resp.json().get('data', [])] if routes_resp.status_code == 200 else []
 print(f"  Found {len(route_ids)} subway/light-rail routes: {route_ids}")
@@ -122,7 +116,7 @@ if route_ids:
                 v = hub_ids_on_route[i+1]
                 if u != v and not G.has_edge(u, v):
                     G.add_edge(u, v, time=2, line=line_name)
-                    edges_added += 1
+                    edges_added   += 1
     else:
         print(f"  Warning: route_patterns request failed with status {lines_response.status_code}: {lines_response.text[:300]}")
 else:
@@ -132,8 +126,37 @@ print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections 
 
 #gps stuff now
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+def _resolve_with_gemini(place_query):
+    if not GEMINI_API_KEY:
+        return None
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    gemini_headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    prompt = f"Give me the single, exact, full mailing address (street number, street name, city, state) for this place in or near Boston, MA: '{place_query}'. Reply with ONLY the address, nothing else. If you genuinely don't know, reply with exactly: UNKNOWN"
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    try:
+        res = requests.post(url, headers=gemini_headers, json=body, timeout=8)
+    except requests.exceptions.RequestException as e:
+        print(f"  (Gemini request failed for '{place_query}': {e})")
+        return None
+
+    if res.status_code == 200:
+        try:
+            text = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+        except (KeyError, IndexError):
+            return None
+        if text == "UNKNOWN" or not text:
+            return None
+        return text
+    else:
+        print(f"  (Gemini returned status {res.status_code} for '{place_query}')")
+        return None
+
+
 def _geocode_nominatim(address_str):
-    """Nominatim is strong on street addresses, weaker on business/POI names."""
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": f"{address_str}, Boston, MA", "format": "json", "limit": 1}
     req_headers = {"User-Agent": "mbta_router_app (personal project, contact: replace-with-your-email)"}
@@ -155,8 +178,40 @@ def _geocode_nominatim(address_str):
         return None, None
 
 
+LOCATIONIQ_API_KEY = os.getenv("LOCATIONIQ_API_KEY")
+
+def _geocode_locationiq(address_str):
+    """LocationIQ -- free tier, no credit card, better at business/POI names than raw Nominatim."""
+    if not LOCATIONIQ_API_KEY:
+        return None, None
+
+    url = "https://us1.locationiq.com/v1/search"
+    params = {
+        "key": LOCATIONIQ_API_KEY,
+        "q": f"{address_str}, Boston, MA",
+        "format": "json",
+        "limit": 1
+    }
+
+    try:
+        res  = requests.get(url, params=params, timeout=8)
+    except requests.exceptions.RequestException as e:
+        print(f"  (LocationIQ request failed for '{address_str}': {e})")
+        return None, None
+
+    if res.status_code == 200:
+        results = res.json()
+        if results:
+            data = results[0]
+            return float(data['lat']), float(data['lon'])
+        return None, None
+    else:
+        # rate limited or bad key or whatever, just fall through to the next geocoder
+        print(f"  (LocationIQ returned status {res.status_code} for '{address_str}')")
+        return None, None
+
+
 def _geocode_photon(address_str):
-    """Photon (OSM-backed) indexes business/POI names more reliably than Nominatim."""
     url = "https://photon.komoot.io/api/"
     params = {"q": f"{address_str}, Boston", "limit": 1, "lat": 42.3601, "lon": -71.0589}
 
@@ -179,18 +234,23 @@ def _geocode_photon(address_str):
 
 
 def geocode_address(address_str):
-    """
-    Tries Nominatim first (good for street addresses), then falls back to
-    Photon (better for business/POI names like 'Target at Fenway') if that
-    comes up empty. Trying two providers catches far more real-world inputs
-    than either one alone.
-    """
-    lat, lon = _geocode_nominatim(address_str)
+    
+    resolved = _resolve_with_gemini(address_str)
+    query = resolved if resolved else address_str
+    if resolved:
+        print(f"  (Gemini resolved '{address_str}' -> '{resolved}')")
+
+    lat, lon = _geocode_nominatim(query)
     if lat is not None:
         return lat, lon
 
-    print(f"  (Nominatim found no results for '{address_str}', trying Photon...)")
-    lat, lon = _geocode_photon(address_str)
+    print(f"  (Nominatim found no results for '{query}', trying LocationIQ...)")
+    lat, lon = _geocode_locationiq(query)
+    if lat is not None:
+        return lat, lon
+
+    print(f"  (trying Photon...)")
+    lat, lon = _geocode_photon(query)
     if lat is not None:
         return lat, lon
 
@@ -218,15 +278,17 @@ def custom_priority_weight(u, v, edge_attributes):
         distance = edge_attributes.get('distance', 0)
 
         # Heavy Penalty: Multiply distance by 40 to prioritize sitting on trains over walking.. ---> Im kinda lazy :)
-        return base_time + (distance * 40)
+        weight = base_time + (distance * 40)
+
+        # only unfavor boarding underground -- transferring/exiting underground is fine, no extra fare either way
+        if u == "START_NODE":
+            board_structure = G.nodes[v].get('structure', 'surface')
+            if board_structure == 'underground':
+                weight += 20
+
+        return weight
  
 
-
-    target_structure = G.nodes[v].get('structure', 'surface')
-
-    if target_structure == 'underground':
-        return base_time + 20
-    
     return base_time
 
 def build_point_to_point_route(origin_addr, dest_addr):
@@ -281,13 +343,11 @@ def build_point_to_point_route(origin_addr, dest_addr):
                 print(f" START WALKING FROM: {origin_addr}")
                 continue
             elif node_id == "END_NODE":
-                # FIX: this used to just print "ARRIVED AT" and continue, which
-                # meant the edge_data for the final hop (prev station -> END_NODE)
-                # was never looked at, so the final walking distance was silently
-                # dropped every time -- including in your Time Out Market run.
+           
                 prev_id = path[i-1]
                 edge_data = G.get_edge_data(prev_id, node_id)
-                final_dist = edge_data.get('distance', 0)
+                final_dist  = edge_data.get('distance', 0)
+
                 print(f"\n  Exit train and walk final {final_dist:.2f} miles to your destination.")
                 print(f"\n ARRIVED AT: {dest_addr}!")
                 continue
@@ -323,9 +383,7 @@ def build_point_to_point_route(origin_addr, dest_addr):
     G.remove_node("START_NODE")
     G.remove_node("END_NODE")
 
-# ---------------------------------------------------------------------
-# EXECUTE POINT-TO-POINT SEARCH
-# ---------------------------------------------------------------------
+
 # Enter any real-world locations in the Boston area!
 origin = "10 Jamaicaway"
 destination = "Veggie Crust Brookline"
