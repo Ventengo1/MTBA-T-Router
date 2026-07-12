@@ -28,7 +28,13 @@ UNDERGROUND_STATIONS = {
 
 #Got this list from AI
 
-headers = {"x-api-key": API_KEY} if API_KEY != os.getenv("MBTA_API_KEY") else {}
+# FIX: this used to compare API_KEY to os.getenv("MBTA_API_KEY") -- but API_KEY
+# *is* os.getenv("MBTA_API_KEY"), so that condition was always False and the key
+# in your .env file was never actually sent. That meant every request ran
+# unauthenticated and anonymous rate limits were likely killing the burst of
+# per-route requests below, silently returning empty results.
+headers = {"x-api-key": API_KEY} if API_KEY else {}
+print("Using MBTA API key" if API_KEY else "No MBTA_API_KEY found -- running unauthenticated (lower rate limits)")
 
 
 G = nx.Graph()
@@ -62,49 +68,133 @@ print("Successfully loaded stations from api")
 
 print("Working on track connections")
 
-lines_response = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
-routes_data = lines_response.json().get('data', [])
+# FIX: route_patterns doesn't support filter[route_type] (that 400 you saw) --
+# it only supports filter[route] (among a few others). So we grab the subway/
+# light-rail route IDs first, then filter route_patterns by those IDs.
+routes_resp = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
+route_ids = [r['id'] for r in routes_resp.json().get('data', [])] if routes_resp.status_code == 200 else []
+print(f"  Found {len(route_ids)} subway/light-rail routes: {route_ids}")
 
 edges_added = 0
-for route in routes_data:
-    route_id = route.get('id')
-    line_name = route.get('attributes', {}).get('long_name')
 
-    #get order esqenune of stiaosn now
+if route_ids:
+    lines_response = requests.get(
+        f"{BASE_URL}/route_patterns?filter[route]={','.join(route_ids)}&include=representative_trip.stops",
+        headers=headers
+    )
 
-    stops_on_route_resp = requests.get(f"{BASE_URL}/stops?filter[route]={route_id}", headers=headers)
-    route_stops = stops_on_route_resp.json().get('data', [])
+    if lines_response.status_code == 200:
+        payload = lines_response.json()
+        route_patterns = payload.get('data', [])
+        included = payload.get('included', [])
 
-    #translate route to parent hubs
+        trips_by_id = {item['id']: item for item in included if item.get('type') == 'trip'}
+        stops_by_id = {item['id']: item for item in included if item.get('type') == 'stop'}
 
-    hub_ids_on_route = []
-    for s in route_stops:
-        parent = s.get('relationships', {}).get('parent_station', {}).get('data', {})
-        parent_id = parent.get('id') if parent else None
-        
-        if parent_id in G.nodes and parent_id not in hub_ids_on_route:
-            hub_ids_on_route.append(parent_id)
-        elif s.get('id') in G.nodes and s.get('id') not in hub_ids_on_route:
-            hub_ids_on_route.append(s.get('id'))
+        print(f"  Found {len(route_patterns)} route patterns, {len(trips_by_id)} trips, {len(stops_by_id)} stops in response")
 
-    for i in range(len(hub_ids_on_route) - 1):
+        for rp in route_patterns:
+            line_name = rp.get('attributes', {}).get('name', 'MBTA Line')
+            trip_rel = rp.get('relationships', {}).get('representative_trip', {}).get('data')
+            if not trip_rel:
+                continue
+            trip = trips_by_id.get(trip_rel['id'])
+            if not trip:
+                continue
 
-        u = hub_ids_on_route[i]
-        v = hub_ids_on_route[i+1]
-        if u != v and not G.has_edge(u, v):
-            G.add_edge(u, v, time=2, line=line_name)
-            edges_added += 1
+            stop_refs = trip.get('relationships', {}).get('stops', {}).get('data', [])
+
+            hub_ids_on_route = []
+            for ref in stop_refs:
+                sid = ref.get('id')
+                if sid in G.nodes and sid not in hub_ids_on_route:
+                    hub_ids_on_route.append(sid)
+                else:
+                    stop_obj = stops_by_id.get(sid)
+                    if stop_obj:
+                        parent_rel = stop_obj.get('relationships', {}).get('parent_station', {}).get('data')
+                        parent_id = parent_rel.get('id') if parent_rel else None
+                        if parent_id and parent_id in G.nodes and parent_id not in hub_ids_on_route:
+                            hub_ids_on_route.append(parent_id)
+
+            for i in range(len(hub_ids_on_route) - 1):
+                u = hub_ids_on_route[i]
+                v = hub_ids_on_route[i+1]
+                if u != v and not G.has_edge(u, v):
+                    G.add_edge(u, v, time=2, line=line_name)
+                    edges_added += 1
+    else:
+        print(f"  Warning: route_patterns request failed with status {lines_response.status_code}: {lines_response.text[:300]}")
+else:
+    print("  Warning: could not fetch route list, skipping track connections")
+
 print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections across all lines")
 
 #gps stuff now
 
+def _geocode_nominatim(address_str):
+    """Nominatim is strong on street addresses, weaker on business/POI names."""
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": f"{address_str}, Boston, MA", "format": "json", "limit": 1}
+    req_headers = {"User-Agent": "mbta_router_app (personal project, contact: replace-with-your-email)"}
+
+    try:
+        res = requests.get(url, params=params, headers=req_headers, timeout=8)
+    except requests.exceptions.RequestException as e:
+        print(f"  (Nominatim request failed for '{address_str}': {e})")
+        return None, None
+
+    if res.status_code == 200:
+        results = res.json()
+        if results:
+            data = results[0]
+            return float(data['lat']), float(data['lon'])
+        return None, None
+    else:
+        print(f"  (Nominatim returned status {res.status_code} for '{address_str}')")
+        return None, None
+
+
+def _geocode_photon(address_str):
+    """Photon (OSM-backed) indexes business/POI names more reliably than Nominatim."""
+    url = "https://photon.komoot.io/api/"
+    params = {"q": f"{address_str}, Boston", "limit": 1, "lat": 42.3601, "lon": -71.0589}
+
+    try:
+        res = requests.get(url, params=params, timeout=8)
+    except requests.exceptions.RequestException as e:
+        print(f"  (Photon request failed for '{address_str}': {e})")
+        return None, None
+
+    if res.status_code == 200:
+        features = res.json().get('features', [])
+        if features:
+            coords = features[0].get('geometry', {}).get('coordinates', [])
+            if len(coords) == 2:
+                return float(coords[1]), float(coords[0])  # GeoJSON is [lon, lat]
+        return None, None
+    else:
+        print(f"  (Photon returned status {res.status_code} for '{address_str}')")
+        return None, None
+
+
 def geocode_address(address_str):
-    """Converts a street name string into latitude and longitude via Nominatim"""
-    url = f"https://nominatim.openstreetmap.org/search?q={address_str},+Boston&format=json&limit=1"
-    res = requests.get(url, headers={"User-Agent": "mbta_router_app"})
-    if res.status_code == 200 and len(res.json()) > 0:
-        data = res.json()[0]
-        return float(data['lat']), float(data['lon'])
+    """
+    Tries Nominatim first (good for street addresses), then falls back to
+    Photon (better for business/POI names like 'Target at Fenway') if that
+    comes up empty. Trying two providers catches far more real-world inputs
+    than either one alone.
+    """
+    lat, lon = _geocode_nominatim(address_str)
+    if lat is not None:
+        return lat, lon
+
+    print(f"  (Nominatim found no results for '{address_str}', trying Photon...)")
+    lat, lon = _geocode_photon(address_str)
+    if lat is not None:
+        return lat, lon
+
+    print(f"  (No geocoder could resolve '{address_str}' -- check spelling/formatting)")
     return None, None
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -191,6 +281,14 @@ def build_point_to_point_route(origin_addr, dest_addr):
                 print(f" START WALKING FROM: {origin_addr}")
                 continue
             elif node_id == "END_NODE":
+                # FIX: this used to just print "ARRIVED AT" and continue, which
+                # meant the edge_data for the final hop (prev station -> END_NODE)
+                # was never looked at, so the final walking distance was silently
+                # dropped every time -- including in your Time Out Market run.
+                prev_id = path[i-1]
+                edge_data = G.get_edge_data(prev_id, node_id)
+                final_dist = edge_data.get('distance', 0)
+                print(f"\n  Exit train and walk final {final_dist:.2f} miles to your destination.")
                 print(f"\n ARRIVED AT: {dest_addr}!")
                 continue
                 
@@ -230,6 +328,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
 # ---------------------------------------------------------------------
 # Enter any real-world locations in the Boston area!
 origin = "10 Jamaicaway"
-destination = "Timeout Market"
+destination = "Meda Modern Indian Cuisine"
 
 build_point_to_point_route(origin, destination)
