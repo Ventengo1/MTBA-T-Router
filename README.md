@@ -28,7 +28,7 @@ Install dependencies and run:
 
 ```
 pip install streamlit networkx requests python-dotenv
-python mbta_router.py
+streamlit run mbta_router.py
 ```
 
 Edit the `origin` and `destination` variables at the bottom of the script to whatever locations you want.
