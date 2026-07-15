@@ -27,7 +27,7 @@ GEMINI_API_KEY=optional, free from ai.google.dev, only used as a last-resort geo
 Install dependencies and run:
 
 ```
-pip install networkx requests python-dotenv
+pip install streamlit networkx requests python-dotenv
 python mbta_router.py
 ```
 
