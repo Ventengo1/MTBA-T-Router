@@ -5,6 +5,11 @@ import os
 import math
 from dotenv import load_dotenv
 
+print("Enter a origin: ")
+origin = input("")
+print("Enter destination")
+destination = input("")
+
 
 
 load_dotenv()
@@ -393,8 +398,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
     G.remove_node("END_NODE")
 
 
-# Enter any real-world locations in the Boston area!
-origin = "10 Jamaicaway"
-destination = "Fenway Target" #testing this to see fi this will work now
+
 
 build_point_to_point_route(origin, destination)
