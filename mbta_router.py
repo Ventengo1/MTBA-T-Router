@@ -3,14 +3,17 @@ import networkx as nx
 import requests
 import os
 import math
+import streamlit as st
 from dotenv import load_dotenv
 
-print("Enter a origin: ")
-origin = input("")
-print("Enter destination")
-destination = input("")
+# Redirect print statements directly to the Streamlit app
+def print(*args, **kwargs):
+    st.text(" ".join(map(str, args)))
 
+st.title("MBTA T-Router")
 
+origin = st.text_input("Enter a origin: ", "10 Jamaicaway")
+destination = st.text_input("Enter destination", "Timeout Market")
 
 load_dotenv()
 
@@ -33,101 +36,104 @@ UNDERGROUND_STATIONS = {
 
 #Got this list from AI
 
-
 headers = {"x-api-key": API_KEY} if API_KEY else {}
-print("Using MBTA API key" if API_KEY else "No MBTA_API_KEY found -- running unauthenticated (lower rate limits)")
+
+@st.cache_resource
+def get_mbta_graph():
+    G = nx.Graph()
+
+    print("Loading MBTA data and analyzing stops")
+
+    response = requests.get(f"{BASE_URL}/stops?filter[route_type]=0,1", headers=headers)
+
+    #adding error stuff
+
+    if response.status_code != 200:
+        print(f"Error fetching data from MBTA API: {response.status_code}")
+        return None
+
+    stops_data = response.json().get('data', [])
+
+    for stop in stops_data:
+        attributes = stop.get('attributes', {})
+        stop_id = stop.get('id')
+        name = attributes.get('name')
+        lat = attributes.get('latitude')
+        lon  =  attributes.get('longitude')
+
+        #classify station environment
+        structure = "underground" if name in UNDERGROUND_STATIONS else "surface"
+
+        G.add_node(stop_id, name=name, structure=structure, lat=lat, lon=lon)
+
+    print("Successfully loaded stations from api")
 
 
-G = nx.Graph()
-
-print("Loading MBTA data and analyzing stops")
-
-response = requests.get(f"{BASE_URL}/stops?filter[route_type]=0,1", headers=headers)
-
-#adding error stuff
-
-if response.status_code != 200:
-    print(f"Error fetching data from MBTA API: {response.status_code}")
-    exit()
-
-stops_data = response.json().get('data', [])
-
-for stop in stops_data:
-    attributes = stop.get('attributes', {})
-    stop_id = stop.get('id')
-    name = attributes.get('name')
-    lat = attributes.get('latitude')
-    lon  =  attributes.get('longitude')
-
-    #classify station environment
-    structure = "underground" if name in UNDERGROUND_STATIONS else "surface"
-
-    G.add_node(stop_id, name=name, structure=structure, lat=lat, lon=lon)
-
-print("Successfully loaded stations from api")
+    print("Working on track connections")
 
 
-print("Working on track connections")
+    routes_resp = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
+    route_ids = [r['id'] for r in routes_resp.json().get('data', [])] if routes_resp.status_code == 200 else []
+    print(f"  Found {len(route_ids)} subway/light-rail routes: {route_ids}")
 
+    edges_added = 0
 
-routes_resp = requests.get(f"{BASE_URL}/routes?filter[type]=0,1", headers=headers)
-route_ids = [r['id'] for r in routes_resp.json().get('data', [])] if routes_resp.status_code == 200 else []
-print(f"  Found {len(route_ids)} subway/light-rail routes: {route_ids}")
+    if route_ids:
+        lines_response = requests.get(
+            f"{BASE_URL}/route_patterns?filter[route]={','.join(route_ids)}&include=representative_trip.stops",
+            headers=headers
+        )
 
-edges_added = 0
+        if lines_response.status_code == 200:
+            payload = lines_response.json()
+            route_patterns = payload.get('data', [])
+            included = payload.get('included', [])
 
-if route_ids:
-    lines_response = requests.get(
-        f"{BASE_URL}/route_patterns?filter[route]={','.join(route_ids)}&include=representative_trip.stops",
-        headers=headers
-    )
+            trips_by_id = {item['id']: item for item in included if item.get('type') == 'trip'}
+            stops_by_id = {item['id']: item for item in included if item.get('type') == 'stop'}
 
-    if lines_response.status_code == 200:
-        payload = lines_response.json()
-        route_patterns = payload.get('data', [])
-        included = payload.get('included', [])
+            print(f"  Found {len(route_patterns)} route patterns, {len(trips_by_id)} trips, {len(stops_by_id)} stops in response")
 
-        trips_by_id = {item['id']: item for item in included if item.get('type') == 'trip'}
-        stops_by_id = {item['id']: item for item in included if item.get('type') == 'stop'}
+            for rp in route_patterns:
+                line_name = rp.get('attributes', {}).get('name', 'MBTA Line')
+                trip_rel = rp.get('relationships', {}).get('representative_trip', {}).get('data')
+                if not trip_rel:
+                    continue
+                trip = trips_by_id.get(trip_rel['id'])
+                if not trip:
+                    continue
 
-        print(f"  Found {len(route_patterns)} route patterns, {len(trips_by_id)} trips, {len(stops_by_id)} stops in response")
+                stop_refs = trip.get('relationships', {}).get('stops', {}).get('data', [])
 
-        for rp in route_patterns:
-            line_name = rp.get('attributes', {}).get('name', 'MBTA Line')
-            trip_rel = rp.get('relationships', {}).get('representative_trip', {}).get('data')
-            if not trip_rel:
-                continue
-            trip = trips_by_id.get(trip_rel['id'])
-            if not trip:
-                continue
+                hub_ids_on_route = []
+                for ref in stop_refs:
+                    sid = ref.get('id')
+                    if sid in G.nodes and sid not in hub_ids_on_route:
+                        hub_ids_on_route.append(sid)
+                    else:
+                        stop_obj = stops_by_id.get(sid)
+                        if stop_obj:
+                            parent_rel = stop_obj.get('relationships', {}).get('parent_station', {}).get('data')
+                            parent_id = parent_rel.get('id') if parent_rel else None
+                            if parent_id and parent_id in G.nodes and parent_id not in hub_ids_on_route:
+                                hub_ids_on_route.append(parent_id)
 
-            stop_refs = trip.get('relationships', {}).get('stops', {}).get('data', [])
-
-            hub_ids_on_route = []
-            for ref in stop_refs:
-                sid = ref.get('id')
-                if sid in G.nodes and sid not in hub_ids_on_route:
-                    hub_ids_on_route.append(sid)
-                else:
-                    stop_obj = stops_by_id.get(sid)
-                    if stop_obj:
-                        parent_rel = stop_obj.get('relationships', {}).get('parent_station', {}).get('data')
-                        parent_id = parent_rel.get('id') if parent_rel else None
-                        if parent_id and parent_id in G.nodes and parent_id not in hub_ids_on_route:
-                            hub_ids_on_route.append(parent_id)
-
-            for i in range(len(hub_ids_on_route) - 1):
-                u = hub_ids_on_route[i]
-                v = hub_ids_on_route[i+1]
-                if u != v and not G.has_edge(u, v):
-                    G.add_edge(u, v, time=2, line=line_name)
-                    edges_added   += 1
+                for i in range(len(hub_ids_on_route) - 1):
+                    u = hub_ids_on_route[i]
+                    v = hub_ids_on_route[i+1]
+                    if u != v and not G.has_edge(u, v):
+                        G.add_edge(u, v, time=2, line=line_name)
+                        edges_added   += 1
+        else:
+            print(f"  Warning: route_patterns request failed with status {lines_response.status_code}: {lines_response.text[:300]}")
     else:
-        print(f"  Warning: route_patterns request failed with status {lines_response.status_code}: {lines_response.text[:300]}")
-else:
-    print("  Warning: could not fetch route list, skipping track connections")
+        print("  Warning: could not fetch route list, skipping track connections")
 
-print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections across all lines")
+    print(f" Tracks all linked, Finallyaks! Loaded {edges_added} system connections across all lines")
+    return G
+
+# Initialize/Load cached graph
+G = get_mbta_graph()
 
 #gps stuff now
 
@@ -398,6 +404,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
     G.remove_node("END_NODE")
 
 
-
-
-build_point_to_point_route(origin, destination)
+if st.button("Calculate Route"):
+    if G is not None:
+        build_point_to_point_route(origin, destination)
