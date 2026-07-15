@@ -395,6 +395,6 @@ def build_point_to_point_route(origin_addr, dest_addr):
 
 # Enter any real-world locations in the Boston area!
 origin = "10 Jamaicaway"
-destination = "500 Harvard St, Brookline, MA 02446" #testing this to see fi this will work now
+destination = "Fenway Target" #testing this to see fi this will work now
 
 build_point_to_point_route(origin, destination)
